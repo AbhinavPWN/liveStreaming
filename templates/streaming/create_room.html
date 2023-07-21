@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Create Room</title>
+    <script>
+        function createRoom() {
+            let roomName = document.getElementById('room-name').value;
+            if (roomName.trim() !== '') {
+                window.location.href = "/stream/" + encodeURIComponent(roomName) + "/";
+            }
+        }
+    </script>
+</head>
+<body>
+    <h1>Create Room</h1>
+    <label for="room-name">Room Name:</label>
+    <input type="text" id="room-name" name="room-name">
+    <button onclick="createRoom()">Create</button>
+</body>
+</html>

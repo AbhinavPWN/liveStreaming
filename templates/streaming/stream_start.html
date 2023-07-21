@@ -1,0 +1,49 @@
+<script>
+    let videoElement = document.getElementById('videoElement');
+    let startButton = document.getElementById('startButton');
+    let stopButton = document.getElementById('stopButton');
+    let videoStream;
+
+    startButton.addEventListener('click', function() {
+        navigator.mediaDevices.getUserMedia({ video: true })
+            .then(function(stream) {
+                videoElement.srcObject = stream;
+                videoStream = stream;
+
+                // Send AJAX request to start capturing video
+                $.ajax({
+                    url: '/capture_video/start/',
+                    method: 'POST',
+                    success: function() {
+                        console.log('Video capture started.');
+                    },
+                    error: function(xhr, status, error) {
+                        console.error('Error starting video capture:', error);
+                    }
+                });
+            })
+            .catch(function(error) {
+                console.error('Error accessing webcam:', error);
+            });
+    });
+
+    stopButton.addEventListener('click', function() {
+        if (videoStream) {
+            videoStream.getTracks().forEach(function(track) {
+                track.stop();
+            });
+
+            // Send AJAX request to stop capturing video
+            $.ajax({
+                url: '/capture_video/stop/',
+                method: 'POST',
+                success: function() {
+                    console.log('Video capture stopped.');
+                },
+                error: function(xhr, status, error) {
+                    console.error('Error stopping video capture:', error);
+                }
+            });
+        }
+    });
+</script>
