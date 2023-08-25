@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Homepage</title>
+</head>
+<body>
+  <h1>Welcome to My Streaming Web Application!</h1>
+
+  <!-- Display the session ID on the page -->
+  <p>Session ID: {{ session_id }}</p>
+
+  <!-- Store the session ID in a cookie -->
+  <script>
+    document.cookie = "session_id={{ session_id }}; expires=Fri, 31 Dec 9999 23:59:59 GMT; path=/";
+  </script>
+
+  <!-- Store the session ID in local storage -->
+  <script>
+    localStorage.setItem('session_id', '{{ session_id }}');
+  </script>
+
+
+  <!-- Other homepage content goes here -->
+</body>
+</html>

@@ -1,10 +1,13 @@
-<!-- stream.html -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <title>Stream Video</title>
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-    {% csrf_token %}
+    <!-- Add a CSRF token here if needed -->
+    <script>
+        let csrfToken = '{{ csrf_token }}'; // Store the CSRF token in a JavaScript variable
+    </script>
+
 </head>
 <body>
     <h1>Webcam Streaming</h1>
@@ -18,118 +21,112 @@
             let startButton = document.getElementById('startButton');
             let stopButton = document.getElementById('stopButton');
             let videoStreams = [];
-            let sockets = [];
-
-            // Get the room name dynamically from the URL
-            let roomName = window.location.pathname.split('/').slice(-2, -1)[0];
-            console.log(roomName)
+            let sessionID = '{{ session_id }}'; // Replace with your session ID logic
+            let roomName = '{{ room_name }}'; // Replace with your room name
 
             function startCapture() {
-                navigator.mediaDevices.getUserMedia({ video: true })
-                    .then(function(stream) {
-                        // Create a new video element for the stream
-                        let videoElement = document.createElement('video');
-                        videoElement.autoplay = true;
-                        videoContainer.appendChild(videoElement);
+                navigator.mediaDevices.getUserMedia({ video: true }).then(function(stream) {
+                    // Create a new video element for the stream
+                    let videoElement = document.createElement('video');
+                    videoElement.autoplay = true;
+                    videoContainer.appendChild(videoElement);
 
-                        // Add the stream to the video element
-                        videoElement.srcObject = stream;
-                        videoStreams.push(stream);
+                    // Add the stream to the video element
+                    videoElement.srcObject = stream;
+                    videoStreams.push(stream);
 
-                        // Send request to start capturing video
-                        sendRequest('/capture_video/start/', 'POST', null, function() {
-                            console.log('Video capture started.');
-                        }, function(xhr, status, error) {
-                            console.error('Error starting video capture:', error);
-                        });
-
-                        // Connect to WebSocket server
-                        let socket = new WebSocket('ws://' + window.location.host + '/ws/stream/' + roomName + '/');
-                        sockets.push(socket);
-                        socket.onopen = function() {
-                            console.log('WebSocket connection established.');
-                        };
-
-                        // Initialize the current playback position from shared resource
-                        let playbackPosition = 0; // Example: using local storage
-                        if (localStorage.getItem('playbackPosition')) {
-                            playbackPosition = parseInt(localStorage.getItem('playbackPosition'));
-                        }
-
-                        // Handle received video frames
-                        socket.onmessage = function(event) {
-                            // Parse the received video frame data
-                            let frameData = JSON.parse(event.data);
-                            let timestamp = frameData.timestamp;
-                            let frame = frameData.frame;
-                            let frameCounter = frameData.frame_counter;
-
-                            // Compare the frame timestamp or sequence number with the current playback position
-                            if (frameCounter >= playbackPosition) {
-                                // Update the playback position to the current frame counter
-                                playbackPosition = frameCounter;
-
-                                // Store the updated playback position in the shared resource (local storage)
-                                localStorage.setItem('playbackPosition', playbackPosition.toString());
-
-                                // Process and display the received video frames
-                                // Find the corresponding video element for the stream and update its source
-                                let index = videoStreams.indexOf(stream);
-                                if (index !== -1) {
-                                    let videoElement = videoContainer.getElementsByTagName('video')[index];
-                                    videoElement.srcObject = URL.createObjectURL(frame);
-                                }
-                            }
-                        };
-
-                        // Send video frames to server
-                        let mediaRecorder = new MediaRecorder(stream);
-                        mediaRecorder.ondataavailable = function(e) {
-                            if (socket.readyState === WebSocket.OPEN) {
-                                // Create a data object with the frame and frame counter
-                                let frameData = {
-                                    timestamp: Date.now().toString(),
-                                    frame: e.data,
-                                    frame_counter: playbackPosition
-                                };
-
-                                // Send the frame data as JSON string
-                                socket.send(JSON.stringify(frameData));
-                            }
-                        };
-                        mediaRecorder.start(1000);  // Adjust the interval as needed
-                    })
-                    .catch(function(error) {
-                        console.error('Error accessing webcam:', error);
+                    // Send request to start RTMP stream
+                    sendRequest('/start_rtmp_stream/', 'POST', {
+                        session_id: sessionID,
+                        room_name: roomName
+                    }, function(response) {
+                        console.log(response.message);
+                    }, function(xhr, status, error) {
+                        console.error('Error starting RTMP stream:', error);
                     });
+
+                    // Connect to WebSocket server
+                    let socket = new WebSocket('ws://' + window.location.host + '/ws/stream/' + roomName + '/');
+                    socket.onopen = function() {
+                        console.log('WebSocket connection established.');
+                        // Send the session ID to associate WebSocket with the session
+                        let data = {
+                            session_id: sessionID
+                        };
+                        socket.send(JSON.stringify(data));
+                    };
+
+                    // Initialize the current playback position from shared resource
+                    let playbackPosition = 0; // Example: using local storage
+                    if (localStorage.getItem('playbackPosition')) {
+                        playbackPosition = parseInt(localStorage.getItem('playbackPosition'));
+                    }
+
+                    // Handle received video frames
+                    socket.onmessage = function(event) {
+                        // Parse the received video frame data
+                        let frameData = JSON.parse(event.data);
+                        let timestamp = frameData.timestamp;
+                        let frame = frameData.frame;
+                        let frameCounter = frameData.frame_counter;
+
+                        // Compare the frame timestamp or sequence number with the current playback position
+                        if (frameCounter >= playbackPosition) {
+                            // Update the playback position to the current frame counter
+                            playbackPosition = frameCounter;
+
+                            // Store the updated playback position in the shared resource (local storage)
+                            localStorage.setItem('playbackPosition', playbackPosition.toString());
+
+                            // Process and display the received video frames
+                            // Find the corresponding video element for the stream and update its source
+                            let index = videoStreams.indexOf(stream);
+                            if (index !== -1) {
+                                let videoElement = videoContainer.getElementsByTagName('video')[index];
+                                videoElement.srcObject = URL.createObjectURL(frame);
+                            }
+                        }
+                    };
+
+                    // Send video frames to server
+                    let mediaRecorder = new MediaRecorder(stream);
+                    mediaRecorder.ondataavailable = function(e) {
+                        if (socket.readyState === WebSocket.OPEN) {
+                        // Create a data object with the frame and frame counter
+                        let frameData = {
+                            timestamp: Date.now().toString(),
+                            frame: e.data,
+                            frame_counter: playbackPosition
+                        };
+
+                        // Send the frame data as JSON string
+                        socket.send(JSON.stringify(frameData));
+                    }
+                    mediaRecorder.start(1000);  // Adjust the interval as needed
+                }
+                }).catch(function(error) {
+                    if (error.name === 'NotAllowedError') {
+                        console.error('Permission denied for accessing webcam.');
+                    } else {
+                        console.error('Error accessing webcam:', error);
+                    }
+                });
             }
 
             function stopCapture() {
-                // Stop capturing video for all streams
+                 // Stop capturing video for all streams
                 videoStreams.forEach(function(stream) {
                     stream.getTracks().forEach(function(track) {
                         track.stop();
                     });
                 });
 
-                // Send request to stop capturing video
-                sendRequest('/capture_video/stop/', 'POST', null, function() {
-                    console.log('Video capture stopped.');
+                // Send request to stop RTMP stream
+                sendRequest('{% url "stop_video_capture" %}', 'POST', null, function(response) {
+                    console.log(response.message);
                 }, function(xhr, status, error) {
-                    console.error('Error stopping video capture:', error);
+                    console.error('Error stopping RTMP stream:', error);
                 });
-
-                // Disconnect from WebSocket servers
-                sockets.forEach(function(socket) {
-                    if (socket.readyState === WebSocket.OPEN) {
-                        socket.close();
-                    }
-                });
-
-                // Clear the video container and streams array
-                videoContainer.innerHTML = '';
-                videoStreams = [];
-                sockets = [];
             }
 
             function sendRequest(url, method, data, successCallback, errorCallback) {
@@ -137,9 +134,12 @@
                     url: url,
                     method: method,
                     data: data,
-                    headers: { 'X-CSRFToken': '{{ csrf_token }}' },
+                    headers: { 'X-CSRFToken': csrfToken },
                     success: successCallback,
-                    error: errorCallback
+                    error: function(xhr, status, error) {
+                            console.error('Error:', error);  // Log the actual error message
+                            errorCallback(xhr, status, error);
+                    }
                 });
             }
 

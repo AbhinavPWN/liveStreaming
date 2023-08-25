@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>View Stream</title>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+</head>
+<body>
+    <h1>Viewing Stream</h1>
+    <video id="viewVideo" controls autoplay></video>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            let viewVideo = document.getElementById('viewVideo');
+            let roomName = "{{ room_name }}";
+
+            // Connect to WebSocket server
+            let socket = new WebSocket('ws://' + window.location.host + '/ws/stream/' + roomName + '/');
+            socket.onopen = function() {
+                console.log('WebSocket connection established.');
+            };
+
+            // Handle received video frames
+            socket.onmessage = function(event) {
+                // Parse the received video frame data
+                let frameData = JSON.parse(event.data);
+                let frame = frameData.frame;
+
+                // Update the video source with the received frame
+                viewVideo.srcObject = URL.createObjectURL(frame);
+            };
+        });
+    </script>
+</body>
+</html>

@@ -1,123 +1,175 @@
 import os
-import shutil
 from datetime import datetime
-import pyrtmp
-from django.http import HttpResponse
+from uuid import uuid4
+import ffmpeg
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
+from django.http import HttpResponse, JsonResponse, StreamingHttpResponse, HttpResponseBadRequest
 from django.shortcuts import render
 import subprocess
 
-from videolive.settings import MEDIA_ROOT
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_POST
+
+# import signal
 
 video_process = None
+global_process = None
+
+
+def homepage(request):
+    # Check if the session ID already exists in the user's session
+    session_id = request.session.get('session_id')
+
+    # If not, generate a new session ID and store it in the user's session
+    if not session_id:
+        session_id = str(uuid4())  # Generate a unique UUID as the session ID
+        request.session['session_id'] = session_id
+
+    return render(request, 'streaming/homepage.html', {'session_id': session_id})
+
+
+def session_page(request):
+    return render(request, 'streaming/session.html')
 
 
 def stream_video(request, room_name):
-    return render(request, 'streaming/stream.html', {'room_name': room_name})
+    # Check if the session ID already exists in the user's session
+    session_id = request.session.get('session_id')
+
+    # If not, generate a new session ID and store it in the user's session
+    if not session_id:
+        session_id = str(uuid4())  # Generate a unique UUID as the session ID
+        request.session['session_id'] = session_id
+
+    return render(request, 'streaming/stream.html', {'room_name': room_name, 'session_id': session_id})
 
 
 def create_room(request):
     return render(request, 'streaming/create_room.html')
 
 
-def capture_video(request):
-    # Generate a unique filename for the video
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    video_filename = f"video_{timestamp}.mp4"
+def start_rtmp_stream(request):
+    if request.method == 'POST':
+        # Get the session ID or user token from the client-side request
+        session_id = request.POST.get('session_id')  # Adjust this based on your frontend data
 
-    # Run FFmpeg command to capture video from webcam and save it to a file
-    command = [
-        'ffmpeg', '-f', 'v4l2', '-i', '/dev/video0', '-vf', 'format=yuv420p', '-c:v', 'libx264', '-preset', 'ultrafast',
-        video_filename
-    ]
+        # Get the room name dynamically from the URL
+        room_name = request.POST.get('room_name')  # Assuming you pass the 'room_name' in the request
 
-    # Start the FFmpeg process with the given command
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    process.wait()
+        if not room_name:
+            return JsonResponse({'error': 'Room name is missing.'}, status=400)
 
-    # Check if the video file was created successfully
-    if process.returncode == 0:
-        # Move the saved video file to a desired location
-        destination_path = os.path.join('media', video_filename)
-        shutil.move(video_filename, destination_path)
+        rtmp_url = f'rtmp://localhost/live/{room_name}?session={session_id}'
 
-        # Read the saved video file
-        with open(destination_path, 'rb') as video_file:
-            video_data = video_file.read()
+        try:
+            (
+                ffmpeg.input('video="OBS Virtual Camera"', format='dshow', framerate=30)
+                .output(rtmp_url, 'pipe: ', format='flv', rtbufsize='256M')
+                # .run_async(pipe_stdin=True)
+                .run_async(pipe_stdout=True, pipe_stderr=True)
+            )
 
-        # Set the response content type as video/mp4
-        response = HttpResponse(video_data, content_type='video/mp4')
-        response['Content-Length'] = len(video_data)
-
-        return response
+            return JsonResponse({'message': 'RTMP stream started successfully'})
+        except ImportError:
+            return JsonResponse(
+                {'error': 'ffmpeg is not installed. Install ffmpeg-python using "pip install ffmpeg-python".'})
+        except Exception as e:
+            return JsonResponse({'error': f'Error starting RTMP stream: {str(e)}'})
     else:
-        # If there was an error while capturing the video, return an error response
-        error_message = process.stderr.read()
+        return JsonResponse({'error': 'This endpoint only accepts POST requests'}, status=400)
 
 
-#         return HttpResponse(f'Error capturing video: {error_message}', status=500)
+# Separate view function for WebSocket connection to the consumer
+def initiate_websocket(request, room_name):
+    # Create a WebSocket connection to the consumer
+    channel_layer = get_channel_layer()
+    session_id = request.POST.get('session_id')  # Assuming you pass the 'session_id' in the request
+
+    async_to_sync(channel_layer.group_send)(
+        f'video_group_{room_name}',  # Replace 'room_name' with your desired room name
+        {
+            'type': 'video_frame',
+            'data': {
+                'session_id': session_id,
+            }
+        }
+    )
+
+    return JsonResponse({'message': 'WebSocket connection established.'})
+
+
+def capture_video(request):
+    def generate_video():
+        # Run FFmpeg command to capture video from webcam and yield the output
+        ffmpeg_command = (
+            # ffmpeg.input('video=Integrated Camera', format='dshow', framerate=30)
+            ffmpeg.input('video="OBS Virtual Camera"', format='dshow', framerate=30)
+            .output('pipe:', format='mp4', vcodec='libx264', preset='ultrafast', vf='format=yuv420p', rtbufsize='256M')
+            .run_async(pipe_stdout=True)
+        )
+        for chunk in ffmpeg_command.stdout.iter_content(chunk_size=4096):
+            yield chunk
+
+    response = StreamingHttpResponse(generate_video(), content_type='video/mp4')
+    response['Content-Disposition'] = 'attachment; filename="captured_video.mp4"'
+    return response
 
 
 def start_video_capture(request):
     global video_process
     if video_process is None:
+        output_path = 'output_video.mp4'
         # Run FFmpeg command to capture video from webcam and save it to a file
-        command = [
-            'ffmpeg', '-f', 'v4l2', '-i', '/dev/video0', '-vf', 'format=yuv420p', '-c:v', 'libx264', '-preset',
-            'ultrafast', 'output_video.mp4'
-        ]
+        video_process = (
+            ffmpeg.input('video="OBS Virtual Camera"', format='dshow', framerate=30, )
+            .output(output_path, format='mp4', vcodec='libx264', preset='ultrafast', vf='fps=30', rtbufsize='256M')
+            .run_async(pipe_stdin=True)
+        )
 
-        # Start the FFmpeg process with the given command
-        video_process = subprocess.Popen(command)
+        return HttpResponse(status=200)
 
-    return HttpResponse(status=200)
+    return HttpResponse("Video capture is already running.", status=400)
 
 
+def get_video_process(request, session_id):
+    # Get the session dictionary from the session store
+    session_dict = request.session.get('session', {})
+
+    # Get the FFmpeg process from the session dictionary
+    video_process_name = session_dict.get('video_process', None)
+
+    return video_process_name
+
+
+@csrf_exempt
+@require_POST
 def stop_video_capture(request):
-    global video_process
-    if video_process is not None:
-        # Terminate the FFmpeg process
-        video_process.terminate()
-        video_process = None
+    # Check if the request is a POST request
+    if request.method != 'POST':
+        return HttpResponseBadRequest('Only POST requests are allowed.')
 
-    return HttpResponse(status=200)
+    # Check if the request contains the session_id parameter
+    if 'session_id' not in request.POST:
+        return HttpResponseBadRequest('The session_id parameter is missing.')
 
-# def capture_video(request):
-#     rtmp_server_url = 'rtmp://your-media-server-url'
-#     rtmp_stream_key = 'your-stream-key'
-#     rtmp_client = pyrtmp.Rtmp(rtmp_server_url)
-#     rtmp_client.connect()
-#     rtmp_client.publish(rtmp_stream_key)
-#
-#     # Generate a unique filename for the video
-#     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-#     video_filename = f"video_{timestamp}.mp4"
-#
-#     # Run FFmpeg command to capture video from webcam and save it to a file
-#     command = [
-#         'ffmpeg', '-f', 'v4l2', '-i', '/dev/video0', '-vf', 'format=yuv420p', '-c:v', 'libx264', '-preset', 'ultrafast',
-#         '-f', 'flv', f'{rtmp_server_url}/{rtmp_stream_key}'
-#     ]
-#
-#     # Start the FFmpeg process with the given command
-#     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-#     process.wait()
-#
-#     # Check if the video file was created successfully
-#     if process.returncode == 0:
-#         # Move the saved video file to a desired location
-#         destination_path = os.path.join('media', video_filename)
-#         shutil.move(video_filename, destination_path)
-#
-#         # Read the saved video file
-#         with open(destination_path, 'rb') as video_file:
-#             video_data = video_file.read()
-#
-#         # Set the response content type as video/mp4
-#         response = HttpResponse(video_data, content_type='video/mp4')
-#         response['Content-Length'] = len(video_data)
-#
-#         return response
-#     else:
-#         # If there was an error while capturing the video, return an error response
-#         error_message = process.stderr.read()
-#         return HttpResponse(f'Error capturing video: {error_message}', status=500)
+    # Get the session ID from the request
+    session_id = request.POST['session_id']
+
+    # Get the FFmpeg process
+    local_video_process = get_video_process(session_id)
+
+    # Stop capturing video
+    if local_video_process is not None:
+        if session_id == local_video_process.session_id:
+            local_video_process.communicate(input=b'q')  # Send 'q' to FFmpeg to stop gracefully
+            local_video_process = None
+            return JsonResponse("Video capture stopped.", status=200)
+        else:
+            return JsonResponse({'error': 'Video capture is not running for this session.'}, status=400)
+    else:
+        return JsonResponse({'error': 'Video capture is not running.'}, status=400)
+
+
+def view_stream(request, room_name):
+    return render(request, 'streaming/view_stream.html', {'room_name': room_name})
